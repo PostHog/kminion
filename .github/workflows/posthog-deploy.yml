@@ -3,7 +3,6 @@ name: PostHog Deploy
 permissions:
   contents: read
   packages: write
-  id-token: write
 
 on:
   pull_request:
@@ -20,7 +19,6 @@ on:
       - '*.md'
 
 env:
-  ECR_REPOSITORY: posthog-kminion
   GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/posthog-kminion
 
 jobs:
@@ -41,16 +39,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ secrets.AWS_ECR_PUBLISH_IAM_ROLE }}
-
-      - name: Log in to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
-
       - name: Set build date
         run: |
           echo "BUILT_AT=$(date --rfc-3339=date)" >> ${GITHUB_ENV}
@@ -60,7 +48,6 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: |
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}
             ${{ env.GHCR_IMAGE }}
           tags: |
             type=ref,event=pr
