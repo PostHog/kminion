@@ -44,10 +44,12 @@ type Exporter struct {
 	consumerGroupMembersEmpty            *prometheus.Desc
 	consumerGroupTopicMembers            *prometheus.Desc
 	consumerGroupAssignedTopicPartitions *prometheus.Desc
-	consumerGroupTopicOffsetSum          *prometheus.Desc
-	consumerGroupTopicPartitionLag       *prometheus.Desc
-	consumerGroupTopicLag                *prometheus.Desc
-	offsetCommits                        *prometheus.Desc
+	consumerGroupTopicOffsetSum              *prometheus.Desc
+	consumerGroupTopicPartitionLag           *prometheus.Desc
+	consumerGroupTopicLag                    *prometheus.Desc
+	consumerGroupTopicPartitionLagSeconds    *prometheus.Desc
+	consumerGroupTopicLagSeconds             *prometheus.Desc
+	offsetCommits                            *prometheus.Desc
 }
 
 func NewExporter(cfg Config, logger *zap.Logger, minionSvc *minion.Service) (*Exporter, error) {
@@ -197,6 +199,20 @@ func (e *Exporter) InitializeMetrics() {
 	e.consumerGroupTopicLag = prometheus.NewDesc(
 		prometheus.BuildFQName(e.cfg.Namespace, "kafka", "consumer_group_topic_lag"),
 		"The number of messages a consumer group is lagging behind across all partitions in a topic",
+		[]string{"group_id", "topic_name"},
+		nil,
+	)
+	// Partition Lag in seconds (time-based)
+	e.consumerGroupTopicPartitionLagSeconds = prometheus.NewDesc(
+		prometheus.BuildFQName(e.cfg.Namespace, "kafka", "consumer_group_topic_partition_lag_seconds"),
+		"The time-based lag in seconds for a consumer group on a partition (now - timestamp of record at committed offset)",
+		[]string{"group_id", "topic_name", "partition_id"},
+		nil,
+	)
+	// Topic Lag in seconds (max of all partition time lags)
+	e.consumerGroupTopicLagSeconds = prometheus.NewDesc(
+		prometheus.BuildFQName(e.cfg.Namespace, "kafka", "consumer_group_topic_lag_seconds"),
+		"The maximum time-based lag in seconds across all partitions for a consumer group on a topic",
 		[]string{"group_id", "topic_name"},
 		nil,
 	)

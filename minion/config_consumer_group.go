@@ -25,6 +25,10 @@ type ConsumerGroupConfig struct {
 	// and only topic lags will be exported.
 	Granularity string `koanf:"granularity"`
 
+	// TimeLagEnabled controls whether time-based lag metrics are computed. When enabled, KMinion will fetch the
+	// record at each committed offset to determine its timestamp, which adds extra Kafka fetch requests per scrape.
+	TimeLagEnabled bool `koanf:"timeLagEnabled"`
+
 	// AllowedGroups are regex strings of group ids that shall be exported
 	AllowedGroupIDs []string `koanf:"allowedGroups"`
 
@@ -37,6 +41,7 @@ func (c *ConsumerGroupConfig) SetDefaults() {
 	c.Enabled = true
 	c.ScrapeMode = ConsumerGroupScrapeModeAdminAPI
 	c.Granularity = ConsumerGroupGranularityPartition
+	c.TimeLagEnabled = false
 	c.AllowedGroupIDs = []string{"/.*/"}
 }
 
