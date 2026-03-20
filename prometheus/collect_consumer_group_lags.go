@@ -4,10 +4,12 @@ import (
 	"context"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"go.uber.org/zap"
 
 	"github.com/cloudhut/kminion/v2/minion"
@@ -49,8 +51,15 @@ func (e *Exporter) collectConsumerGroupLags(ctx context.Context, ch chan<- prome
 	}
 }
 
-func (e *Exporter) collectConsumerGroupLagsOffsetTopic(_ context.Context, ch chan<- prometheus.Metric, marks map[string]map[int32]waterMark) bool {
+func (e *Exporter) collectConsumerGroupLagsOffsetTopic(ctx context.Context, ch chan<- prometheus.Metric, marks map[string]map[int32]waterMark) bool {
 	offsets := e.minionSvc.ListAllConsumerGroupOffsetsInternal()
+
+	// Fetch record timestamps for time-based lag if enabled
+	var recordTimestamps minion.RecordTimestamps
+	if e.minionSvc.Cfg.ConsumerGroups.TimeLagEnabled {
+		recordTimestamps = e.fetchTimestampsForOffsetTopic(ctx, offsets, marks)
+	}
+
 	for groupName, group := range offsets {
 		if !e.minionSvc.IsGroupAllowed(groupName) {
 			continue
@@ -60,6 +69,9 @@ func (e *Exporter) collectConsumerGroupLagsOffsetTopic(_ context.Context, ch cha
 		for topicName, topic := range group {
 			topicLag := float64(0)
 			topicOffsetSum := float64(0)
+			topicLagSeconds := float64(0)
+			nowMillis := time.Now().UnixMilli()
+
 			for partitionID, partition := range topic {
 				childLogger := e.logger.With(
 					zap.String("consumer_group", groupName),
@@ -87,6 +99,24 @@ func (e *Exporter) collectConsumerGroupLagsOffsetTopic(_ context.Context, ch cha
 				// Offset commit count for this consumer group
 				offsetCommits += partition.CommitCount
 
+				// Time-based lag
+				if recordTimestamps != nil {
+					lagSeconds := e.computeTimeLagSeconds(recordTimestamps, topicName, partitionID, partition.Value.Offset, partitionMark.HighWaterMark, nowMillis)
+					if lagSeconds >= 0 {
+						topicLagSeconds = math.Max(topicLagSeconds, lagSeconds)
+						if e.minionSvc.Cfg.ConsumerGroups.Granularity == minion.ConsumerGroupGranularityPartition {
+							ch <- prometheus.MustNewConstMetric(
+								e.consumerGroupTopicPartitionLagSeconds,
+								prometheus.GaugeValue,
+								lagSeconds,
+								groupName,
+								topicName,
+								strconv.Itoa(int(partitionID)),
+							)
+						}
+					}
+				}
+
 				if e.minionSvc.Cfg.ConsumerGroups.Granularity == minion.ConsumerGroupGranularityTopic {
 					continue
 				}
@@ -113,6 +143,15 @@ func (e *Exporter) collectConsumerGroupLagsOffsetTopic(_ context.Context, ch cha
 				groupName,
 				topicName,
 			)
+			if recordTimestamps != nil {
+				ch <- prometheus.MustNewConstMetric(
+					e.consumerGroupTopicLagSeconds,
+					prometheus.GaugeValue,
+					topicLagSeconds,
+					groupName,
+					topicName,
+				)
+			}
 		}
 
 		ch <- prometheus.MustNewConstMetric(
@@ -129,6 +168,13 @@ func (e *Exporter) collectConsumerGroupLagsAdminAPI(ctx context.Context, ch chan
 	isOk := true
 
 	groupOffsets, err := e.minionSvc.ListAllConsumerGroupOffsetsAdminAPI(ctx)
+
+	// Fetch record timestamps for time-based lag if enabled
+	var recordTimestamps minion.RecordTimestamps
+	if e.minionSvc.Cfg.ConsumerGroups.TimeLagEnabled {
+		recordTimestamps = e.fetchTimestampsForAdminAPI(ctx, groupOffsets, marks)
+	}
+
 	for groupName, offsetRes := range groupOffsets {
 		if !e.minionSvc.IsGroupAllowed(groupName) {
 			continue
@@ -145,6 +191,9 @@ func (e *Exporter) collectConsumerGroupLagsAdminAPI(ctx context.Context, ch chan
 		for _, topic := range offsetRes.Topics {
 			topicLag := float64(0)
 			topicOffsetSum := float64(0)
+			topicLagSeconds := float64(0)
+			nowMillis := time.Now().UnixMilli()
+
 			for _, partition := range topic.Partitions {
 				err := kerr.ErrorForCode(partition.ErrorCode)
 				if err != nil {
@@ -179,6 +228,24 @@ func (e *Exporter) collectConsumerGroupLagsAdminAPI(ctx context.Context, ch chan
 				topicLag += lag
 				topicOffsetSum += float64(partition.Offset)
 
+				// Time-based lag
+				if recordTimestamps != nil {
+					lagSeconds := e.computeTimeLagSeconds(recordTimestamps, topic.Topic, partition.Partition, partition.Offset, partitionMark.HighWaterMark, nowMillis)
+					if lagSeconds >= 0 {
+						topicLagSeconds = math.Max(topicLagSeconds, lagSeconds)
+						if e.minionSvc.Cfg.ConsumerGroups.Granularity == minion.ConsumerGroupGranularityPartition {
+							ch <- prometheus.MustNewConstMetric(
+								e.consumerGroupTopicPartitionLagSeconds,
+								prometheus.GaugeValue,
+								lagSeconds,
+								groupName,
+								topic.Topic,
+								strconv.Itoa(int(partition.Partition)),
+							)
+						}
+					}
+				}
+
 				if e.minionSvc.Cfg.ConsumerGroups.Granularity == minion.ConsumerGroupGranularityTopic {
 					continue
 				}
@@ -206,9 +273,132 @@ func (e *Exporter) collectConsumerGroupLagsAdminAPI(ctx context.Context, ch chan
 				groupName,
 				topic.Topic,
 			)
+			if recordTimestamps != nil {
+				ch <- prometheus.MustNewConstMetric(
+					e.consumerGroupTopicLagSeconds,
+					prometheus.GaugeValue,
+					topicLagSeconds,
+					groupName,
+					topic.Topic,
+				)
+			}
 		}
 	}
 	return isOk
+}
+
+// computeTimeLagSeconds returns the time-based lag in seconds for a partition.
+// Returns -1 if the timestamp could not be determined (e.g., no committed offset or fetch failed).
+func (e *Exporter) computeTimeLagSeconds(timestamps minion.RecordTimestamps, topic string, partition int32, committedOffset int64, highWaterMark int64, nowMillis int64) float64 {
+	if committedOffset < 0 {
+		return -1
+	}
+	// Consumer is fully caught up
+	if committedOffset >= highWaterMark {
+		return 0
+	}
+	ts, ok := timestamps.Get(topic, partition, committedOffset)
+	if !ok {
+		return -1
+	}
+	lagSeconds := float64(nowMillis-ts) / 1000.0
+	return math.Max(0, lagSeconds)
+}
+
+// fetchTimestampsForAdminAPI collects all offsets that need timestamps from AdminAPI group offsets
+// and fetches them in a single batched call.
+func (e *Exporter) fetchTimestampsForAdminAPI(ctx context.Context, groupOffsets map[string]*kmsg.OffsetFetchResponse, marks map[string]map[int32]waterMark) minion.RecordTimestamps {
+	var offsets []minion.TopicPartitionOffset
+	for groupName, offsetRes := range groupOffsets {
+		if !e.minionSvc.IsGroupAllowed(groupName) {
+			continue
+		}
+		if kerr.ErrorForCode(offsetRes.ErrorCode) != nil {
+			continue
+		}
+		for _, topic := range offsetRes.Topics {
+			topicMark, exists := marks[topic.Topic]
+			if !exists {
+				continue
+			}
+			for _, partition := range topic.Partitions {
+				if kerr.ErrorForCode(partition.ErrorCode) != nil {
+					continue
+				}
+				if partition.Offset < 0 {
+					continue
+				}
+				partitionMark, exists := topicMark[partition.Partition]
+				if !exists {
+					continue
+				}
+				if partition.Offset >= partitionMark.HighWaterMark {
+					continue // Caught up, no fetch needed
+				}
+				offsets = append(offsets, minion.TopicPartitionOffset{
+					Topic:     topic.Topic,
+					Partition: partition.Partition,
+					Offset:    partition.Offset,
+				})
+			}
+		}
+	}
+
+	if len(offsets) == 0 {
+		return minion.RecordTimestamps{}
+	}
+
+	timestamps, err := e.minionSvc.FetchRecordTimestampsCached(ctx, offsets)
+	if err != nil {
+		e.logger.Error("failed to fetch record timestamps for time-based lag", zap.Error(err))
+		return nil
+	}
+	return timestamps
+}
+
+// fetchTimestampsForOffsetTopic collects all offsets that need timestamps from internal storage offsets
+// and fetches them in a single batched call.
+func (e *Exporter) fetchTimestampsForOffsetTopic(ctx context.Context, groupOffsets map[string]map[string]map[int32]minion.OffsetCommit, marks map[string]map[int32]waterMark) minion.RecordTimestamps {
+	var offsets []minion.TopicPartitionOffset
+	for groupName, group := range groupOffsets {
+		if !e.minionSvc.IsGroupAllowed(groupName) {
+			continue
+		}
+		for topicName, topic := range group {
+			topicMark, exists := marks[topicName]
+			if !exists {
+				continue
+			}
+			for partitionID, partition := range topic {
+				if partition.Value.Offset < 0 {
+					continue
+				}
+				partitionMark, exists := topicMark[partitionID]
+				if !exists {
+					continue
+				}
+				if partition.Value.Offset >= partitionMark.HighWaterMark {
+					continue // Caught up, no fetch needed
+				}
+				offsets = append(offsets, minion.TopicPartitionOffset{
+					Topic:     topicName,
+					Partition: partitionID,
+					Offset:    partition.Value.Offset,
+				})
+			}
+		}
+	}
+
+	if len(offsets) == 0 {
+		return minion.RecordTimestamps{}
+	}
+
+	timestamps, err := e.minionSvc.FetchRecordTimestampsCached(ctx, offsets)
+	if err != nil {
+		e.logger.Error("failed to fetch record timestamps for time-based lag", zap.Error(err))
+		return nil
+	}
+	return timestamps
 }
 
 func (e *Exporter) waterMarksByTopic(lowMarks kadm.ListedOffsets, highMarks kadm.ListedOffsets) map[string]map[int32]waterMark {

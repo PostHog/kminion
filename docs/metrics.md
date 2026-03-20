@@ -99,6 +99,14 @@ kminion_kafka_consumer_group_topic_partition_lag{group_id="bigquery-sink",partit
 # TYPE kminion_kafka_consumer_group_topic_lag gauge
 kminion_kafka_consumer_group_topic_lag{group_id="bigquery-sink",topic_name="shop-activity"} 147481
 
+# HELP kminion_kafka_consumer_group_topic_partition_lag_seconds The time-based lag in seconds for a consumer group on a partition (now - timestamp of record at committed offset)
+# TYPE kminion_kafka_consumer_group_topic_partition_lag_seconds gauge
+kminion_kafka_consumer_group_topic_partition_lag_seconds{group_id="bigquery-sink",partition_id="10",topic_name="shop-activity"} 45.123
+
+# HELP kminion_kafka_consumer_group_topic_lag_seconds The maximum time-based lag in seconds across all partitions for a consumer group on a topic
+# TYPE kminion_kafka_consumer_group_topic_lag_seconds gauge
+kminion_kafka_consumer_group_topic_lag_seconds{group_id="bigquery-sink",topic_name="shop-activity"} 45.123
+
 # HELP kminion_kafka_consumer_group_offset_commits_total The number of offsets committed by a group
 # TYPE kminion_kafka_consumer_group_offset_commits_total counter
 kminion_kafka_consumer_group_offset_commits_total{group_id="bigquery-sink"} 1098

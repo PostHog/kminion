@@ -1,0 +1,72 @@
+name: PostHog Deploy
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths-ignore:
+      - 'charts/**'
+      - '*.md'
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'charts/**'
+      - '*.md'
+
+env:
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/posthog-kminion
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Depot CLI
+        uses: depot/setup-action@b0b1ea4f69e92ebf5dea3f8713a1b0c37b2126a5 # v1.6.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set build date
+        run: |
+          echo "BUILT_AT=$(date --rfc-3339=date)" >> ${GITHUB_ENV}
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=${{ github.sha }}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: depot/build-push-action@5f3b3c2e5a00f0093de47f657aeaefcedff27d18
+        with:
+          context: .
+          buildx-fallback: false
+          project: rkwcwxbtsp
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+            BUILT_AT=${{ env.BUILT_AT }}
+            COMMIT=${{ github.sha }}
