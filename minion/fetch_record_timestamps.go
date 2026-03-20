@@ -69,6 +69,20 @@ func (s *Service) FetchRecordTimestampsCached(ctx context.Context, offsets []Top
 
 // fetchRecordTimestamps fetches timestamps for a deduplicated set of offsets concurrently.
 func (s *Service) fetchRecordTimestamps(ctx context.Context, offsets []TopicPartitionOffset) (RecordTimestamps, error) {
+	// Build a topic name -> TopicID map from metadata so that Fetch requests
+	// work with brokers that negotiate Fetch API v13+ (which uses TopicID
+	// instead of topic name).
+	topicIDs := make(map[string][16]byte)
+	metadata, err := s.GetMetadataCached(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get metadata for topic IDs: %w", err)
+	}
+	for _, t := range metadata.Topics {
+		if t.Topic != nil {
+			topicIDs[*t.Topic] = t.TopicID
+		}
+	}
+
 	// Deduplicate by (topic, partition, offset)
 	type tpoKey struct {
 		Topic     string
@@ -94,7 +108,7 @@ func (s *Service) fetchRecordTimestamps(ctx context.Context, offsets []TopicPart
 	for _, tpo := range unique {
 		tpo := tpo
 		g.Go(func() error {
-			ts, err := s.fetchSingleRecordTimestamp(gCtx, tpo.Topic, tpo.Partition, tpo.Offset)
+			ts, err := s.fetchSingleRecordTimestamp(gCtx, tpo.Topic, tpo.Partition, tpo.Offset, topicIDs[tpo.Topic])
 			if err != nil {
 				s.logger.Debug("failed to fetch record timestamp for time-based lag",
 					zap.String("topic", tpo.Topic),
@@ -115,7 +129,7 @@ func (s *Service) fetchRecordTimestamps(ctx context.Context, offsets []TopicPart
 }
 
 // fetchSingleRecordTimestamp fetches a single record at the given offset and returns its timestamp.
-func (s *Service) fetchSingleRecordTimestamp(ctx context.Context, topic string, partition int32, offset int64) (int64, error) {
+func (s *Service) fetchSingleRecordTimestamp(ctx context.Context, topic string, partition int32, offset int64, topicID [16]byte) (int64, error) {
 	req := kmsg.NewFetchRequest()
 	req.MaxWaitMillis = 5000
 	req.MinBytes = 1
@@ -123,6 +137,7 @@ func (s *Service) fetchSingleRecordTimestamp(ctx context.Context, topic string, 
 
 	reqTopic := kmsg.NewFetchRequestTopic()
 	reqTopic.Topic = topic
+	reqTopic.TopicID = topicID
 
 	reqPartition := kmsg.NewFetchRequestTopicPartition()
 	reqPartition.Partition = partition
