@@ -103,7 +103,7 @@ func (s *Service) fetchRecordTimestamps(ctx context.Context, offsets []TopicPart
 	var mu sync.Mutex
 
 	g, gCtx := errgroup.WithContext(ctx)
-	g.SetLimit(10)
+	g.SetLimit(s.Cfg.ConsumerGroups.TimeLagFetchConcurrency)
 
 	for _, tpo := range unique {
 		tpo := tpo
@@ -133,7 +133,7 @@ func (s *Service) fetchSingleRecordTimestamp(ctx context.Context, topic string, 
 	req := kmsg.NewFetchRequest()
 	req.MaxWaitMillis = 5000
 	req.MinBytes = 1
-	req.MaxBytes = 1 << 20 // 1MB
+	req.MaxBytes = int32(s.Cfg.ConsumerGroups.TimeLagMaxFetchBytes)
 
 	reqTopic := kmsg.NewFetchRequestTopic()
 	reqTopic.Topic = topic
@@ -142,7 +142,7 @@ func (s *Service) fetchSingleRecordTimestamp(ctx context.Context, topic string, 
 	reqPartition := kmsg.NewFetchRequestTopicPartition()
 	reqPartition.Partition = partition
 	reqPartition.FetchOffset = offset
-	reqPartition.PartitionMaxBytes = 1 << 20 // 1MB
+	reqPartition.PartitionMaxBytes = s.Cfg.ConsumerGroups.TimeLagMaxFetchBytes
 
 	reqTopic.Partitions = []kmsg.FetchRequestTopicPartition{reqPartition}
 	req.Topics = []kmsg.FetchRequestTopic{reqTopic}

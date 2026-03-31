@@ -29,6 +29,15 @@ type ConsumerGroupConfig struct {
 	// record at each committed offset to determine its timestamp, which adds extra Kafka fetch requests per scrape.
 	TimeLagEnabled bool `koanf:"timeLagEnabled"`
 
+	// TimeLagFetchConcurrency controls the maximum number of concurrent Kafka Fetch requests when fetching record
+	// timestamps for time-based lag. Higher values reduce total fetch time but increase peak network/memory usage.
+	TimeLagFetchConcurrency int `koanf:"timeLagFetchConcurrency"`
+
+	// TimeLagMaxFetchBytes controls the maximum number of bytes fetched per partition when retrieving record
+	// timestamps. Only the first record batch is needed, so this can be kept small. The Kafka protocol guarantees
+	// at least one complete record batch is returned even if it exceeds this limit.
+	TimeLagMaxFetchBytes int32 `koanf:"timeLagMaxFetchBytes"`
+
 	// AllowedGroups are regex strings of group ids that shall be exported
 	AllowedGroupIDs []string `koanf:"allowedGroups"`
 
@@ -42,6 +51,8 @@ func (c *ConsumerGroupConfig) SetDefaults() {
 	c.ScrapeMode = ConsumerGroupScrapeModeAdminAPI
 	c.Granularity = ConsumerGroupGranularityPartition
 	c.TimeLagEnabled = false
+	c.TimeLagFetchConcurrency = 10
+	c.TimeLagMaxFetchBytes = 4096
 	c.AllowedGroupIDs = []string{"/.*/"}
 }
 
@@ -62,6 +73,13 @@ func (c *ConsumerGroupConfig) Validate() error {
 			c.Granularity,
 			ConsumerGroupGranularityTopic,
 			ConsumerGroupGranularityPartition)
+	}
+
+	if c.TimeLagFetchConcurrency < 1 {
+		return fmt.Errorf("timeLagFetchConcurrency must be at least 1, got %d", c.TimeLagFetchConcurrency)
+	}
+	if c.TimeLagMaxFetchBytes < 1 {
+		return fmt.Errorf("timeLagMaxFetchBytes must be at least 1, got %d", c.TimeLagMaxFetchBytes)
 	}
 
 	// Check if all group strings are valid regex or literals
