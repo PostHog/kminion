@@ -87,6 +87,12 @@ minion:
     # fetches the record at each committed offset to determine its timestamp. This adds extra Kafka fetch requests
     # per scrape but provides metrics like kminion_kafka_consumer_group_topic_lag_seconds.
     timeLagEnabled: false
+    # Maximum number of concurrent Kafka Fetch requests when fetching record timestamps for time-based lag.
+    # Increase this for clusters (e.g. Warpstream) where higher parallelism improves throughput.
+    timeLagFetchConcurrency: 10
+    # Maximum bytes fetched per partition when retrieving record timestamps. Only the first record batch is
+    # needed, so this can be kept small. Kafka guarantees at least one complete batch even if it exceeds this.
+    timeLagMaxFetchBytes: 4096
     # AllowedGroups are regex strings of group ids that shall be exported
     # You can specify allowed groups by providing literals like "my-consumergroup-name" or by providing regex expressions
     # like "/internal-.*/".
